@@ -1,16 +1,13 @@
+require('dotenv').config()
+
 const express = require('express')
-const morgan = require('morgan')
 
 const app = express()
 app.use(express.json())
 app.use(express.static('dist'))
-/*
-morgan.token('body', (req) => JSON.stringify(req.body))
 
-app.use(
-  morgan(':method :url :status :res[content-length] - :response-time ms :body')
-)
-*/
+
+// Middlewares -----------------
 
 const requestLogger = (req, res, next) => {
   console.log('Method:', req.method)
@@ -20,106 +17,108 @@ const requestLogger = (req, res, next) => {
   next()
 } 
 
+const errorHandler = (err, req, res, next) => {
+  console.error(err.message)
+
+  if (err.name === 'CastError') {
+    return res.status(400).send({ error: 'malformatated id' })
+  } else if (err.name === 'ValidationError') {
+    const messages = Object.values(err.errors).map(e => e.message)
+    return res.status(400).json({ error: messages[0] })
+  }
+  next(err)
+}
+
+const unknownEndpoint = (req, res) => {
+  res.status(404).send({ error: 'unknown endpoint' })
+}
+
+// -----------------------------
+
+
+const Person = require('./models/person')
+
 app.use(requestLogger)
-
-
-let persons = [
-    { 
-      id: "1",
-      name: "Arto Hellas", 
-      number: "040-123456"
-    },
-    { 
-      id: "2",
-      name: "Ada Lovelace", 
-      number: "39-44-5323523"
-    },
-    { 
-      id: "3",
-      name: "Dan Abramov", 
-      number: "12-43-234345"
-    },
-    { 
-      id: "4",
-      name: "Mary Poppendieck", 
-      number: "39-23-6423122"
-    }
-]
-
-const generateId = () => {
-  let id 
-
-  do {
-    id = Math.floor(Math.random() * 1000).toString()
-  } while (persons.some(p => p.id == id))
-
-  return id
-} 
 
 const normalize = (str) => str.trim().toLowerCase()
 
-
-
 app.get('/api/persons', (req, res) => {
-  res.json(persons)
+  Person.find({}).then(persons => {
+    res.json(persons)
+  })
 })
 
 app.get('/api/info', (req, res) => {
   const now = new Date()
-  const len = persons.length
-
-  res.send(`
-    <p>Phonebook has info for ${len} people</p>
-    <p>${now}</p>
-  `)
+  Person.find({}).then(persons => {
+    res.json(persons)
+    const len = persons.length
+    res.send(`
+      <p>Phonebook has info for ${len} people</p>
+      <p>${now}</p>
+    `)
+  })
 })
 
-app.get('/api/persons/:id', (req, res) => {
-  const id = req.params.id 
-  const person = persons.find(p => p.id === id)
-  if (person) {
-    res.json(person)
-  }
-  res.status(404).end()
+app.get('/api/persons/:id', (req, res) => { 
+  Person.findById(req.params.id).then(person => {
+    if (person) {
+      res.json(person)
+    }
+    res.status(404).end()
+  })
 })
 
 app.delete('/api/persons/:id', (req, res) => {
-  const id = req.params.id
-  persons = persons.filter(p => p.id !== id)
-  res.status(204).end()
+  Person.findOneAndDelete({ id: req.params.id }).then(() => {
+    res.status(204).end()
+  })
 })
 
-app.post('/api/persons', (req, res) => {
+app.post('/api/persons', async (req, res, next) => {
   const body = req.body
 
-  if (!body.name && !body.number) {
-    return res.status(400).json({
-      error: 'name and number are missing'
-    })
-  } else if (!body.name) {
-    return res.status(400).json({
-      error: 'name missing'
-    })
-  } else if (!body.number) {
-    return res.status(400).json({
-      error: 'number missing'
-    })
-  } else if (persons.some(p => normalize(p.name) === normalize(body.name))) {
+  const alreadyExists = await Person.exists({ name: new RegExp(`^${body.name}$`, 'i') })
+
+  if (alreadyExists) {
     return res.status(400).json({
       error: 'The name already exists in the phonebook'
     })
   }
 
-  const person = {
+  const person = new Person({
     name: body.name, 
     number: body.number, 
-    id: generateId(),
-  }
+  })
 
-  persons = persons.concat(person)
-
-  res.json(person)
+  person.save()
+    .then(savedPerson => {
+      res.json(savedPerson)
+    })
+    .catch(err => next(err))
 })
+
+app.put('/api/persons/:id', (req, res, next) => {
+  const { name, number } = req.body
+
+  Person.findById(req.params.id)
+    .then(person => {
+      if (!person) {
+        return res.status(404).end()
+      }
+
+      person.name = name
+      person.number = number
+
+      return person.save().then((updatedPerson) => {
+        res.json(updatedPerson)
+      })
+    })
+    .catch(err => next(err))
+})
+
+app.use(errorHandler)
+app.use(unknownEndpoint)
 
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
